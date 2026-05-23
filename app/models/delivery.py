@@ -1,9 +1,9 @@
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Text, Float
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import String, DateTime, Enum, Text, Float, Integer, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from datetime import datetime
 import enum
 
-Base = declarative_base()
+from app.models.base import Base
 
 
 class DeliveryStatus(str, enum.Enum):
@@ -18,31 +18,42 @@ class DeliveryStatus(str, enum.Enum):
 class Delivery(Base):
     __tablename__ = "deliveries"
 
-    id = Column(Integer, primary_key=True, index=True)
-    tracking_code = Column(String(64), unique=True, index=True, nullable=False)
-    shipper_id = Column(String(64), nullable=False)
-    recipient_id = Column(String(64), nullable=False)
-    building_id = Column(String(32), nullable=False)
-    unit_number = Column(String(16), nullable=False)
-    status = Column(Enum(DeliveryStatus), default=DeliveryStatus.PENDING)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    tracking_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    shipper_id: Mapped[str] = mapped_column(String(64))
+    recipient_id: Mapped[str] = mapped_column(String(64))
+    building_id: Mapped[str] = mapped_column(String(32))
+    unit_number: Mapped[str] = mapped_column(String(16))
+    status: Mapped[DeliveryStatus] = mapped_column(
+        Enum(DeliveryStatus), default=DeliveryStatus.PENDING
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    camera_snapshot_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ai_confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ai_detection_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    verification_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Camera verification fields
-    camera_snapshot_url = Column(String(512), nullable=True)
-    ai_confidence_score = Column(Float, nullable=True)
-    verified_at = Column(DateTime, nullable=True)
-    verification_note = Column(Text, nullable=True)
+    events: Mapped[list["DeliveryEvent"]] = relationship(
+        back_populates="delivery", cascade="all, delete-orphan"
+    )
 
 
 class DeliveryEvent(Base):
     __tablename__ = "delivery_events"
 
-    id = Column(Integer, primary_key=True, index=True)
-    delivery_id = Column(Integer, nullable=False, index=True)
-    event_type = Column(String(64), nullable=False)
-    description = Column(Text, nullable=True)
-    actor_id = Column(String(64), nullable=True)
-    actor_role = Column(String(32), nullable=True)
-    snapshot_url = Column(String(512), nullable=True)
-    occurred_at = Column(DateTime, default=datetime.utcnow)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    delivery_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("deliveries.id"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    snapshot_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    delivery: Mapped["Delivery"] = relationship(back_populates="events")

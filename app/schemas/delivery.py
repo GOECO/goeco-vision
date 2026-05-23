@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 from app.models.delivery import DeliveryStatus
 
 
@@ -20,6 +20,8 @@ class DeliveryUpdate(BaseModel):
 
 
 class DeliveryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     tracking_code: str
     shipper_id: str
@@ -29,13 +31,11 @@ class DeliveryResponse(BaseModel):
     status: DeliveryStatus
     camera_snapshot_url: Optional[str]
     ai_confidence_score: Optional[float]
+    ai_detection_detail: Optional[str]
     verified_at: Optional[datetime]
     verification_note: Optional[str]
     created_at: datetime
     updated_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class DeliveryEventCreate(BaseModel):
@@ -47,6 +47,8 @@ class DeliveryEventCreate(BaseModel):
 
 
 class DeliveryEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     delivery_id: int
     event_type: str
@@ -56,5 +58,7 @@ class DeliveryEventResponse(BaseModel):
     snapshot_url: Optional[str]
     occurred_at: datetime
 
-    class Config:
-        from_attributes = True
+
+class VerifyResponse(BaseModel):
+    delivery: DeliveryResponse
+    detection: Optional[Any] = None
