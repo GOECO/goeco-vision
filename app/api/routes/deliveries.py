@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.delivery import Delivery, DeliveryEvent, DeliveryStatus
+from app.models.shipper import ShipperProfile
 from app.schemas.delivery import (
     DeliveryCreate,
     DeliveryUpdate,
@@ -128,11 +129,18 @@ async def verify_delivery(
     image: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload ảnh camera — YOLO phân tích và xác thực giao nhận tự động."""
+    """Upload ảnh camera — YOLO + Face ID phân tích và xác thực giao nhận tự động."""
     delivery = await _get_or_404(delivery_id, db)
     image_bytes = await image.read()
 
-    result = await verify_delivery_image(image_bytes, delivery.shipper_id)
+    # Lấy face reference nếu shipper đã đăng ký Face ID
+    shipper_result = await db.execute(
+        select(ShipperProfile).where(ShipperProfile.shipper_id == delivery.shipper_id)
+    )
+    shipper = shipper_result.scalar_one_or_none()
+    face_ref = shipper.face_embedding if shipper else None
+
+    result = await verify_delivery_image(image_bytes, delivery.shipper_id, face_reference_json=face_ref)
 
     delivery.ai_confidence_score = result.confidence
     delivery.verification_note = result.note

@@ -1,7 +1,8 @@
 """
-Delivery verification service — dùng YOLO để phân tích ảnh camera giao nhận.
+Delivery verification service — kết hợp YOLO object detection + Face ID.
 """
 from app.services.yolo_service import detect_objects
+from app.services import face_service
 from app.core.config import settings
 
 
@@ -13,15 +14,16 @@ class VerificationResult:
         self.detail = detail or {}
 
 
-async def verify_delivery_image(image_bytes: bytes, shipper_id: str) -> VerificationResult:
+async def verify_delivery_image(
+    image_bytes: bytes,
+    shipper_id: str,
+    face_reference_json: str | None = None,
+) -> VerificationResult:
     """
-    Phân tích ảnh camera:
-      - Phát hiện có người (shipper) trong khung hình không
-      - Phát hiện có kiện hàng không
-      - Trả về confidence score tổng hợp
-
-    TODO: thêm face matching — so sánh khuôn mặt trong ảnh với ảnh đại diện
-          shipper lưu trong DB (dùng deepface hoặc InsightFace).
+    Phân tích ảnh camera giao nhận:
+      1. YOLO detect người + kiện hàng
+      2. Nếu shipper có Face ID: so sánh khuôn mặt (InsightFace)
+      3. Trả về kết quả xác thực tổng hợp
     """
     detection = await detect_objects(image_bytes)
     detail = detection.to_dict()
@@ -30,47 +32,53 @@ async def verify_delivery_image(image_bytes: bytes, shipper_id: str) -> Verifica
     package_conf = detection.max_package_confidence
     threshold = settings.yolo_confidence_threshold
 
-    if person_conf >= threshold and package_conf >= threshold:
-        combined = round((person_conf + package_conf) / 2, 3)
+    # Bước 1: kiểm tra có người và hàng trong khung hình
+    if person_conf < threshold:
         return VerificationResult(
-            verified=True,
-            confidence=combined,
-            note=(
-                f"YOLO xác thực: {detection.persons_count} người, "
-                f"{detection.packages_count} kiện hàng — confidence {combined:.0%}"
-            ),
+            verified=False, confidence=0.0,
+            note="Không phát hiện người trong khung hình — cần kiểm tra thủ công.",
             detail=detail,
         )
 
-    if person_conf >= threshold and package_conf < threshold:
+    if package_conf < threshold:
         return VerificationResult(
-            verified=False,
-            confidence=person_conf,
-            note="Phát hiện người nhưng không thấy kiện hàng — cần kiểm tra thủ công.",
+            verified=False, confidence=person_conf,
+            note="Phát hiện người nhưng không thấy kiện hàng — nghi ngờ bất thường.",
             detail=detail,
         )
 
-    if person_conf < threshold and package_conf >= threshold:
+    # Bước 2: Face ID nếu shipper đã đăng ký
+    if face_reference_json:
+        matched, face_conf, face_note = face_service.verify_face_against_reference(
+            image_bytes, face_reference_json
+        )
+        detail["face_verification"] = {"matched": matched, "confidence": face_conf, "note": face_note}
+
+        if not matched:
+            return VerificationResult(
+                verified=False, confidence=face_conf,
+                note=f"YOLO OK nhưng Face ID không khớp — {face_note}",
+                detail=detail,
+            )
+
+        combined = round((person_conf + package_conf + face_conf) / 3, 3)
         return VerificationResult(
-            verified=False,
-            confidence=package_conf,
-            note="Phát hiện kiện hàng nhưng không thấy shipper — nghi ngờ giao nhận bất thường.",
+            verified=True, confidence=combined,
+            note=f"✅ YOLO + Face ID xác thực — confidence {combined:.0%}",
             detail=detail,
         )
 
+    # Bước 3: không có Face ID — chỉ dùng YOLO
+    combined = round((person_conf + package_conf) / 2, 3)
     return VerificationResult(
-        verified=False,
-        confidence=0.0,
-        note="Không phát hiện người hoặc kiện hàng — cần xem xét thủ công.",
+        verified=True, confidence=combined,
+        note=f"YOLO xác thực (chưa có Face ID) — confidence {combined:.0%}",
         detail=detail,
     )
 
 
 async def check_locker_tamper(camera_id: str, image_bytes: bytes) -> bool:
     """
-    Phát hiện can thiệp bất thường tại khu vực kệ/tủ.
-
-    TODO: implement frame-differencing hoặc anomaly detection — hiện tại
-          trả về False (không phát hiện) để tránh false positive.
+    TODO: implement frame-differencing hoặc anomaly detection.
     """
     return False

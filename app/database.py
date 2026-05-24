@@ -21,7 +21,18 @@ async def get_db():
 
 async def init_db():
     from app.models.base import Base
-    import app.models.delivery  # noqa: F401 — registers models
-    import app.models.shelf     # noqa: F401 — registers models
+    import app.models.delivery  # noqa: F401
+    import app.models.shelf     # noqa: F401
+    import app.models.shipper   # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def check_db_connection() -> bool:
+    try:
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
