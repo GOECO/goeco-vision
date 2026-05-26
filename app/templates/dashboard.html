@@ -261,6 +261,74 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script>setTimeout(() => location.reload(), 60000);</script>
+<script>
+(function () {
+  const RECONNECT_DELAY = 3000;
+  let toast = null;
+
+  function showToast(msg, type) {
+    const colors = { delivery_created: 'bg-success', delivery_updated: 'bg-info',
+                     delivery_verified: 'bg-primary', shelf_occupied: 'bg-secondary',
+                     shelf_released: 'bg-light text-dark' };
+    const el = document.createElement('div');
+    el.className = `toast align-items-center text-white border-0 ${colors[type] || 'bg-dark'} show`;
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<div class="d-flex"><div class="toast-body">${msg}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.className = 'toast-container position-fixed bottom-0 end-0 p-3';
+      toast.style.zIndex = 9999;
+      document.body.appendChild(toast);
+    }
+    toast.appendChild(el);
+    setTimeout(() => el.remove(), 5000);
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/dashboard`);
+
+    ws.onmessage = function (evt) {
+      const msg = JSON.parse(evt.data);
+      const type = msg.event;
+      const d = msg.data || {};
+      let text = '';
+      if (type === 'delivery_created') text = `📦 Đơn mới #${d.id} — ${d.tracking_code || ''} (${d.building_id || ''})`;
+      else if (type === 'delivery_updated') text = `🔄 Đơn #${d.id} cập nhật trạng thái: <strong>${d.status}</strong>`;
+      else if (type === 'delivery_verified') text = `🤖 Đơn #${d.id} ${d.verified ? 'xác thực thành công' : 'xác thực thất bại'} (${Math.round((d.confidence||0)*100)}%)`;
+      else if (type === 'shelf_occupied') text = `📥 Kệ #${d.shelf_id} slot ${d.slot} được lấp đầy`;
+      else if (type === 'shelf_released') text = `📤 Kệ #${d.shelf_id} slot ${d.slot} được giải phóng`;
+      else text = `Sự kiện: ${type}`;
+      showToast(text, type);
+      /* Reload stats after a short delay so DB has settled */
+      setTimeout(refreshStats, 800);
+    };
+
+    ws.onclose = function () {
+      setTimeout(connect, RECONNECT_DELAY);
+    };
+  }
+
+  function refreshStats() {
+    fetch('/api/v1/dashboard/stats')
+      .then(r => r.json())
+      .then(data => {
+        const s = data.stats;
+        if (!s) return;
+        const ids = { total: '.stat-number:nth-of-type(1)' };
+        const cards = document.querySelectorAll('.stat-number');
+        if (cards[0]) cards[0].textContent = s.total ?? cards[0].textContent;
+        if (cards[1]) cards[1].textContent = s.pending ?? cards[1].textContent;
+        if (cards[2]) cards[2].textContent = s.verified ?? cards[2].textContent;
+        if (cards[3]) cards[3].textContent = s.disputed ?? cards[3].textContent;
+      })
+      .catch(() => {});
+  }
+
+  connect();
+  /* Fallback full-reload every 5 minutes for event table / shelf list */
+  setTimeout(() => location.reload(), 300000);
+})();
+</script>
 </body>
 </html>

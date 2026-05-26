@@ -19,6 +19,8 @@ from app.schemas.shelf import (
     ShelfEventResponse,
 )
 
+from app.api.routes.ws import manager as ws_manager
+
 router = APIRouter(prefix="/shelves", tags=["smart-shelf"])
 
 
@@ -173,7 +175,9 @@ async def occupy_slot(
 
     await db.commit()
     result = await db.execute(select(ShelfSlot).where(ShelfSlot.id == slot.id))
-    return result.scalar_one()
+    updated_slot = result.scalar_one()
+    await ws_manager.broadcast("shelf_occupied", {"shelf_id": shelf_id, "slot": slot_number, "building_id": shelf.building_id, "delivery_id": payload.delivery_id})
+    return updated_slot
 
 
 @router.post("/{shelf_id}/slots/{slot_number}/release", response_model=SlotResponse)
@@ -211,7 +215,9 @@ async def release_slot(
 
     await db.commit()
     result = await db.execute(select(ShelfSlot).where(ShelfSlot.id == slot.id))
-    return result.scalar_one()
+    updated_slot = result.scalar_one()
+    await ws_manager.broadcast("shelf_released", {"shelf_id": shelf_id, "slot": slot_number, "building_id": shelf.building_id})
+    return updated_slot
 
 
 @router.get("/{shelf_id}/events", response_model=List[ShelfEventResponse])

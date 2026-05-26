@@ -13,6 +13,7 @@ from app.api.routes.shippers import router as shippers_router
 from app.api.routes.notifications import router as notifications_router
 from app.api.routes.agent import router as agent_router
 from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.ws import router as ws_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -53,3 +54,4 @@ app.include_router(shippers_router,      prefix="/api/v1")
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(agent_router,         prefix="/api/v1")
 app.include_router(dashboard_router)
+app.include_router(ws_router)

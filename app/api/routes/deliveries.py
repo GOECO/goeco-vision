@@ -19,6 +19,7 @@ from app.schemas.delivery import (
     VerifyResponse,
 )
 from app.services.verification import verify_delivery_image
+from app.api.routes.ws import manager as ws_manager
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
 
@@ -75,6 +76,7 @@ async def create_delivery(payload: DeliveryCreate, db: AsyncSession = Depends(ge
     await _log_event(db, delivery.id, "created", "Delivery registered", actor_id=payload.shipper_id, actor_role="shipper")
     await db.commit()
     await db.refresh(delivery)
+    await ws_manager.broadcast("delivery_created", {"id": delivery.id, "tracking_code": delivery.tracking_code, "building_id": delivery.building_id})
     return delivery
 
 
@@ -120,6 +122,7 @@ async def update_delivery(
 
     await db.commit()
     await db.refresh(delivery)
+    await ws_manager.broadcast("delivery_updated", {"id": delivery.id, "status": delivery.status.value, "building_id": delivery.building_id})
     return delivery
 
 
@@ -160,6 +163,7 @@ async def verify_delivery(
 
     await db.commit()
     await db.refresh(delivery)
+    await ws_manager.broadcast("delivery_verified", {"id": delivery.id, "verified": result.verified, "confidence": result.confidence, "building_id": delivery.building_id})
     return VerifyResponse(delivery=delivery, detection=result.detail)
 
 
