@@ -21,9 +21,11 @@ async def get_db():
 
 async def init_db():
     from app.models.base import Base
-    import app.models.delivery  # noqa: F401
-    import app.models.shelf     # noqa: F401
-    import app.models.shipper   # noqa: F401
+    import app.models.delivery      # noqa: F401
+    import app.models.shelf         # noqa: F401
+    import app.models.shipper       # noqa: F401
+    import app.models.user          # noqa: F401
+    import app.models.notification  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
