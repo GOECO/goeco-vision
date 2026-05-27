@@ -4,6 +4,7 @@ YOLO local inference service.
 Dùng YOLOv8n (nano, ~6MB) để detect người và kiện hàng trong ảnh camera.
 Model tự download lần đầu chạy từ ultralytics CDN.
 """
+import asyncio
 import io
 import logging
 from typing import Optional
@@ -23,6 +24,8 @@ PACKAGE_CLASSES = {
     26: "handbag",
     28: "suitcase",
 }
+
+_MAX_INFERENCE_DIM = 640
 
 
 def _get_model():
@@ -64,33 +67,42 @@ class DetectionResult:
 
 async def detect_objects(image_bytes: bytes) -> DetectionResult:
     """Chạy YOLO inference trên ảnh bytes, trả về kết quả detect người và kiện hàng."""
-    import numpy as np
 
-    model = _get_model()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    arr = np.array(image)
+    def _run_sync() -> DetectionResult:
+        import numpy as np
 
-    results = model(arr, verbose=False, conf=settings.yolo_confidence_threshold)[0]
+        model = _get_model()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-    persons = []
-    packages = []
+        w, h = image.size
+        if max(w, h) > _MAX_INFERENCE_DIM:
+            scale = _MAX_INFERENCE_DIM / max(w, h)
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    for box in results.boxes:
-        cls_id = int(box.cls[0])
-        conf = float(box.conf[0])
-        x1, y1, x2, y2 = box.xyxy[0].tolist()
-        bbox = {"x1": round(x1), "y1": round(y1), "x2": round(x2), "y2": round(y2)}
+        arr = np.array(image)
+        results = model(arr, verbose=False, conf=settings.yolo_confidence_threshold)[0]
 
-        if cls_id == PERSON_CLASS:
-            persons.append({"confidence": round(conf, 3), "bbox": bbox})
-        elif cls_id in PACKAGE_CLASSES:
-            packages.append({
-                "class": PACKAGE_CLASSES[cls_id],
-                "confidence": round(conf, 3),
-                "bbox": bbox,
-            })
+        persons = []
+        packages = []
 
-    return DetectionResult(persons=persons, packages=packages)
+        for box in results.boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            bbox = {"x1": round(x1), "y1": round(y1), "x2": round(x2), "y2": round(y2)}
+
+            if cls_id == PERSON_CLASS:
+                persons.append({"confidence": round(conf, 3), "bbox": bbox})
+            elif cls_id in PACKAGE_CLASSES:
+                packages.append({
+                    "class": PACKAGE_CLASSES[cls_id],
+                    "confidence": round(conf, 3),
+                    "bbox": bbox,
+                })
+
+        return DetectionResult(persons=persons, packages=packages)
+
+    return await asyncio.to_thread(_run_sync)
 
 
 async def detect_objects_from_camera(camera_url: str) -> Optional[DetectionResult]:

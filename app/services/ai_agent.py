@@ -1,25 +1,26 @@
 """
-GOECO AI Operations Agent — powered by Claude claude-sonnet-4-6.
+GOECO AI Operations Agent — powered by Claude.
 
 Mỗi vai trò (cư dân, shipper, ban quản lý) có system prompt riêng
 và bộ tools để truy vấn dữ liệu vận hành real-time từ DB.
 """
 import json
 import logging
-from typing import Any
 
 import anthropic
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.delivery import Delivery, DeliveryStatus
-from app.models.shelf import SmartShelf, ShelfSlot, SlotStatus
+from app.models.delivery import Delivery, DeliveryStatus, DeliveryEvent
+from app.models.shelf import SmartShelf, ShelfSlot, SlotStatus, ShelfEvent
 from app.models.user import User, UserRole
 
 logger = logging.getLogger(__name__)
 
 _client: anthropic.AsyncAnthropic | None = None
+
+MAX_TOOL_ITERATIONS = 10
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -29,7 +30,7 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-TOOLS: list[dict] = [
+_ALL_TOOLS: list[dict] = [
     {
         "name": "get_delivery_status",
         "description": "Kiểm tra trạng thái đơn hàng theo tracking code.",
@@ -72,7 +73,29 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "name": "list_recent_events",
+        "description": "Xem lịch sử sự kiện giao nhận và kệ thông minh gần đây trong tòa nhà.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "building_id": {"type": "string", "description": "ID tòa nhà"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Số sự kiện tối đa, mặc định 20",
+                },
+            },
+        },
+    },
 ]
+
+# None means all tools are accessible
+_ROLE_TOOL_NAMES: dict[UserRole, set[str] | None] = {
+    UserRole.RESIDENT: {"get_delivery_status", "get_my_pending_deliveries", "get_shelf_availability"},
+    UserRole.SHIPPER: {"get_delivery_status", "get_shelf_availability"},
+    UserRole.MANAGER: None,
+    UserRole.ADMIN: None,
+}
 
 _SYSTEM = {
     UserRole.RESIDENT: (
@@ -97,6 +120,18 @@ _SYSTEM = {
         "Trả lời kỹ thuật và chuyên sâu khi cần."
     ),
 }
+
+
+def _build_tools(role: UserRole) -> list[dict]:
+    """Filter tools by role and mark the last one for prompt caching."""
+    allowed = _ROLE_TOOL_NAMES.get(role)
+    if allowed is None:
+        filtered = [dict(t) for t in _ALL_TOOLS]
+    else:
+        filtered = [dict(t) for t in _ALL_TOOLS if t["name"] in allowed]
+    if filtered:
+        filtered[-1] = {**filtered[-1], "cache_control": {"type": "ephemeral"}}
+    return filtered
 
 
 async def _run_tool(name: str, tool_input: dict, user: User, db: AsyncSession) -> str:
@@ -176,6 +211,54 @@ async def _run_tool(name: str, tool_input: dict, user: User, db: AsyncSession) -
                 "alert": f"{full_shelves} kệ đầy" if full_shelves else "Không có cảnh báo",
             }, ensure_ascii=False)
 
+        if name == "list_recent_events":
+            building_id = tool_input.get("building_id", user.building_id)
+            limit = min(int(tool_input.get("limit", 20)), 50)
+
+            delivery_q = (
+                select(DeliveryEvent)
+                .join(Delivery, DeliveryEvent.delivery_id == Delivery.id)
+                .order_by(DeliveryEvent.occurred_at.desc())
+                .limit(limit)
+            )
+            if building_id:
+                delivery_q = delivery_q.where(Delivery.building_id == building_id)
+            delivery_events = (await db.execute(delivery_q)).scalars().all()
+
+            shelf_q = (
+                select(ShelfEvent)
+                .join(SmartShelf, ShelfEvent.shelf_id == SmartShelf.id)
+                .order_by(ShelfEvent.occurred_at.desc())
+                .limit(limit)
+            )
+            if building_id:
+                shelf_q = shelf_q.where(SmartShelf.building_id == building_id)
+            shelf_events = (await db.execute(shelf_q)).scalars().all()
+
+            events = []
+            for e in delivery_events:
+                events.append({
+                    "source": "delivery",
+                    "type": e.event_type,
+                    "delivery_id": e.delivery_id,
+                    "actor": e.actor_id,
+                    "occurred_at": e.occurred_at.isoformat(),
+                })
+            for e in shelf_events:
+                events.append({
+                    "source": "shelf",
+                    "type": e.event_type,
+                    "shelf_id": e.shelf_id,
+                    "slot": e.slot_number,
+                    "actor": e.actor_id,
+                    "occurred_at": e.occurred_at.isoformat(),
+                })
+
+            events.sort(key=lambda x: x["occurred_at"], reverse=True)
+            events = events[:limit]
+
+            return json.dumps(events, ensure_ascii=False) if events else "Không có sự kiện nào gần đây."
+
     except Exception as e:
         logger.error("Tool %s error: %s", name, e)
         return f"Lỗi khi truy vấn dữ liệu: {e}"
@@ -193,22 +276,25 @@ async def chat(
     Trả về (assistant_reply, updated_messages).
     """
     system_tpl = _SYSTEM.get(user.role, _SYSTEM[UserRole.RESIDENT])
-    system = system_tpl.format(
+    system_text = system_tpl.format(
         name=user.full_name,
         building=user.building_id or "chưa xác định",
         unit=user.unit_number or "chưa xác định",
     )
+    system_block = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+    tools = _build_tools(user.role)
 
     client = _get_client()
     history = list(messages)
 
-    while True:
+    for _ in range(MAX_TOOL_ITERATIONS):
         response = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1024,
-            system=system,
-            tools=TOOLS,
+            system=system_block,
+            tools=tools,
             messages=history,
+            extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
 
         history.append({"role": "assistant", "content": response.content})
@@ -234,4 +320,5 @@ async def chat(
 
         break
 
-    return "Không có phản hồi.", history
+    logger.warning("AI Agent reached max iterations (%d) for user %s", MAX_TOOL_ITERATIONS, user.username)
+    return "Không thể hoàn thành yêu cầu sau nhiều lần thử.", history
