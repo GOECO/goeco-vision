@@ -7,9 +7,13 @@ from app.models.base import Base
 import app.models.delivery  # noqa
 import app.models.shelf     # noqa
 
+from app.core.config import settings as app_settings
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+config.set_main_option("sqlalchemy.url", app_settings.database_url)
 
 target_metadata = Base.metadata
 
