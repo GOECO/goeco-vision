@@ -77,6 +77,24 @@ class DetectionResult:
             "packages": self.packages,
         }
 
+    @classmethod
+    def merge(cls, results: list["DetectionResult"]) -> "DetectionResult":
+        """Merge nhiều frame: dùng detections của frame tốt nhất, average confidence."""
+        if not results:
+            return cls(persons=[], packages=[])
+
+        best = max(results, key=lambda r: r.max_person_confidence + r.max_package_confidence)
+        merged = cls(persons=best.persons, packages=best.packages)
+
+        # Override với average confidence qua tất cả frames
+        merged.max_person_confidence = round(
+            sum(r.max_person_confidence for r in results) / len(results), 3
+        )
+        merged.max_package_confidence = round(
+            sum(r.max_package_confidence for r in results) / len(results), 3
+        )
+        return merged
+
 
 async def detect_objects(image_bytes: bytes) -> DetectionResult:
     """Chạy YOLO inference trên ảnh bytes, trả về kết quả detect người và kiện hàng."""
@@ -118,22 +136,57 @@ async def detect_objects(image_bytes: bytes) -> DetectionResult:
     return await asyncio.to_thread(_run_sync)
 
 
-async def detect_objects_from_camera(camera_url: str) -> Optional[DetectionResult]:
+async def detect_multiframe_from_camera(
+    camera_url: str,
+    n_frames: int = 3,
+    interval_ms: int = 400,
+) -> tuple[bytes | None, DetectionResult | None]:
     """
-    Chụp frame từ RTSP camera stream và chạy detection.
-    Cần cài thêm opencv-python để dùng tính năng này.
+    Chụp n frame từ RTSP/camera URL, chạy YOLO song song, merge kết quả.
+    Trả về (best_frame_bytes, merged_result) — best_frame là frame có confidence cao nhất.
     """
-    try:
-        import cv2  # noqa
+    def _capture_frames() -> list[bytes]:
+        import cv2
+        import time
+
         cap = cv2.VideoCapture(camera_url)
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            return None
-        is_success, buf = cv2.imencode(".jpg", frame)
-        if not is_success:
-            return None
-        return await detect_objects(buf.tobytes())
+        frames: list[bytes] = []
+        try:
+            for i in range(n_frames):
+                ret, frame = cap.read()
+                if ret:
+                    ok, buf = cv2.imencode(".jpg", frame)
+                    if ok:
+                        frames.append(buf.tobytes())
+                if interval_ms > 0 and i < n_frames - 1:
+                    time.sleep(interval_ms / 1000.0)
+        finally:
+            cap.release()
+        return frames
+
+    try:
+        frame_bytes_list = await asyncio.to_thread(_capture_frames)
     except ImportError:
-        logger.warning("opencv-python chưa được cài — không thể đọc camera stream.")
-        return None
+        logger.warning("opencv-python chưa được cài — không thể đọc RTSP stream.")
+        return None, None
+
+    if not frame_bytes_list:
+        logger.warning("Không chụp được frame từ camera: %s", camera_url)
+        return None, None
+
+    # Chạy YOLO song song trên tất cả frames
+    results = await asyncio.gather(*[detect_objects(fb) for fb in frame_bytes_list])
+    merged = DetectionResult.merge(list(results))
+
+    # Chọn frame tốt nhất để lưu và vẽ bboxes
+    best_idx = max(
+        range(len(results)),
+        key=lambda i: results[i].max_person_confidence + results[i].max_package_confidence,
+    )
+    return frame_bytes_list[best_idx], merged
+
+
+async def detect_objects_from_camera(camera_url: str) -> Optional[DetectionResult]:
+    """Single-frame camera capture (backward compat). Dùng detect_multiframe_from_camera cho production."""
+    _, result = await detect_multiframe_from_camera(camera_url, n_frames=1, interval_ms=0)
+    return result
