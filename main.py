@@ -68,6 +68,16 @@ app.include_router(ws_router)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    return _templates.TemplateResponse(request, "login.html", {})
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return _templates.TemplateResponse(request, "login.html", {})
+
+
 @app.get("/verify", response_class=HTMLResponse)
 @app.get("/verify/{delivery_id}", response_class=HTMLResponse)
 async def verify_page(request: Request, delivery_id: int = None):

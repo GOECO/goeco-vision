@@ -45,10 +45,20 @@
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="navMain">
-      <ul class="navbar-nav ms-auto gap-1">
-        <li class="nav-item"><a class="nav-link active fw-semibold" href="#"><i class="fa-solid fa-gauge-high me-1"></i>Dashboard</a></li>
-        <li class="nav-item"><a class="nav-link" href="#"><i class="fa-solid fa-box me-1"></i>Deliveries</a></li>
-        <li class="nav-item"><a class="nav-link" href="#"><i class="fa-solid fa-layer-group me-1"></i>Shelves</a></li>
+      <ul class="navbar-nav ms-auto align-items-center gap-1">
+        <li class="nav-item"><a class="nav-link active fw-semibold" href="/dashboard"><i class="fa-solid fa-gauge-high me-1"></i>Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link" href="#deliveries" onclick="showDeliveries()"><i class="fa-solid fa-box me-1"></i>Đơn hàng</a></li>
+        <li class="nav-item"><a class="nav-link" href="/verify"><i class="fa-solid fa-camera me-1"></i>Xác thực AI</a></li>
+        <li class="nav-item ms-2">
+          <span id="userBadge" class="badge bg-success bg-opacity-10 text-success border border-success border-opacity-25 px-3 py-2 rounded-pill fw-normal" style="font-size:.82rem">
+            <i class="fa-solid fa-circle-user me-1"></i><span id="userName">...</span>
+          </span>
+        </li>
+        <li class="nav-item ms-1">
+          <button class="btn btn-sm btn-outline-danger" onclick="logout()">
+            <i class="fa-solid fa-right-from-bracket me-1"></i>Đăng xuất
+          </button>
+        </li>
       </ul>
     </div>
   </div>
@@ -183,7 +193,15 @@
                     </span>
                   </td>
                   <td class="text-muted">{{ ev.actor_role or '—' }}</td>
-                  <td class="text-muted">{{ ev.delivery_id or '—' }}</td>
+                  <td>
+                    {% if ev.delivery_id %}
+                      <a href="/verify/{{ ev.delivery_id }}" class="badge bg-success bg-opacity-10 text-success text-decoration-none border border-success border-opacity-25">
+                        <i class="fa-solid fa-camera me-1"></i>#{{ ev.delivery_id }}
+                      </a>
+                    {% else %}
+                      <span class="text-muted">—</span>
+                    {% endif %}
+                  </td>
                 </tr>
                 {% endfor %}
               </tbody>
@@ -254,6 +272,50 @@
 
   </div>
 
+  <!-- Deliveries section (loaded via JS) -->
+  <div id="deliveriesSection" style="display:none" class="mt-4">
+    <div class="card section-card">
+      <div class="card-header bg-white border-bottom py-3 px-4 d-flex align-items-center justify-content-between">
+        <h6 class="mb-0 fw-semibold"><i class="fa-solid fa-box me-2 text-success"></i>Danh sách đơn hàng</h6>
+        <div class="d-flex gap-2">
+          <select id="filterStatus" class="form-select form-select-sm" style="width:auto" onchange="loadDeliveries()">
+            <option value="">Tất cả trạng thái</option>
+            <option value="pending">Pending</option>
+            <option value="in_transit">In Transit</option>
+            <option value="arrived">Arrived</option>
+            <option value="verified">Verified</option>
+            <option value="collected">Collected</option>
+            <option value="disputed">Disputed</option>
+          </select>
+          <button class="btn btn-sm btn-success" onclick="window.location.href='/verify'">
+            <i class="fa-solid fa-camera me-1"></i>Xác thực mới
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr>
+                <th class="ps-4">Mã đơn</th>
+                <th>Tòa nhà</th>
+                <th>Căn hộ</th>
+                <th>Trạng thái</th>
+                <th>Shipper</th>
+                <th>Thời gian</th>
+                <th>AI Score</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="deliveriesBody">
+              <tr><td colspan="8" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Đang tải...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <footer class="text-center mt-5 pb-4">
     <span>GOECO Vision &copy; 2026 — AI Infrastructure for Smart Urban Living</span>
   </footer>
@@ -262,6 +324,72 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+// Auth check
+(function () {
+  const token = localStorage.getItem('goeco_token');
+  if (!token) { window.location.href = '/login'; return; }
+  const name = localStorage.getItem('goeco_name') || '—';
+  const role = localStorage.getItem('goeco_role') || '';
+  const roleLabel = {admin:'Admin', manager:'Quản lý', resident:'Cư dân', shipper:'Shipper'}[role] || role;
+  document.getElementById('userName').textContent = name + ' · ' + roleLabel;
+})();
+
+function logout() {
+  localStorage.removeItem('goeco_token');
+  localStorage.removeItem('goeco_role');
+  localStorage.removeItem('goeco_name');
+  window.location.href = '/login';
+}
+
+const STATUS_BADGE = {
+  pending:    '<span class="badge bg-secondary">Pending</span>',
+  in_transit: '<span class="badge bg-info text-dark">In Transit</span>',
+  arrived:    '<span class="badge bg-warning text-dark">Arrived</span>',
+  verified:   '<span class="badge bg-primary">Verified</span>',
+  collected:  '<span class="badge bg-success">Collected</span>',
+  disputed:   '<span class="badge bg-danger">Disputed</span>',
+};
+
+function showDeliveries() {
+  const sec = document.getElementById('deliveriesSection');
+  sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
+  if (sec.style.display === 'block') loadDeliveries();
+  sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadDeliveries() {
+  const token = localStorage.getItem('goeco_token');
+  const status = document.getElementById('filterStatus').value;
+  const params = new URLSearchParams({ limit: 50 });
+  if (status) params.append('status', status);
+  const resp = await fetch('/api/v1/deliveries/?' + params, {
+    headers: { Authorization: 'Bearer ' + token }
+  });
+  if (resp.status === 401) { window.location.href = '/login'; return; }
+  const data = await resp.json();
+  const tbody = document.getElementById('deliveriesBody');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">Không có đơn hàng nào</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(d => {
+    const score = d.ai_confidence_score != null ? Math.round(d.ai_confidence_score * 100) + '%' : '—';
+    const time = d.created_at ? new Date(d.created_at).toLocaleDateString('vi-VN', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+    return `<tr>
+      <td class="ps-4 fw-semibold text-success">${d.tracking_code}</td>
+      <td>${d.building_id}</td>
+      <td>${d.unit_number || '—'}</td>
+      <td>${STATUS_BADGE[d.status] || d.status}</td>
+      <td class="text-muted">${d.shipper_id || '—'}</td>
+      <td class="text-muted" style="font-size:.78rem">${time}</td>
+      <td>${score !== '—' ? '<span class="text-primary fw-semibold">' + score + '</span>' : '—'}</td>
+      <td><a href="/verify/${d.id}" class="btn btn-sm btn-outline-success">
+        <i class="fa-solid fa-camera me-1"></i>Xác thực
+      </a></td>
+    </tr>`;
+  }).join('');
+}
+
 (function () {
   const RECONNECT_DELAY = 3000;
   let toast = null;
