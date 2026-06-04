@@ -84,3 +84,8 @@ async def verify_page(request: Request, delivery_id: int = None):
     return _templates.TemplateResponse(
         request, "verify.html", {"delivery_id": delivery_id}
     )
+
+
+@app.get("/workflow", response_class=HTMLResponse)
+async def workflow_page(request: Request):
+    return _templates.TemplateResponse(request, "workflow.html", {})

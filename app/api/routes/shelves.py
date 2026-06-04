@@ -16,6 +16,7 @@ from app.schemas.shelf import (
     SlotResponse,
     OccupySlotRequest,
     ReleaseSlotRequest,
+    PickupRequest,
     ShelfEventResponse,
 )
 
@@ -150,10 +151,11 @@ async def occupy_slot(
             detail=f"Slot {slot_number} đang ở trạng thái '{slot.status.value}', không thể đặt hàng vào."
         )
 
-    token = secrets.token_urlsafe(16)
+    # Sinh mã PIN 6 chữ số cho cư dân
+    pin = str(secrets.randbelow(900000) + 100000)
     slot.status = SlotStatus.OCCUPIED
     slot.current_delivery_id = payload.delivery_id
-    slot.access_token = token
+    slot.access_token = pin
     slot.occupied_since = datetime.utcnow()
     slot.notes = payload.notes
 
@@ -161,8 +163,31 @@ async def occupy_slot(
         db, shelf_id, slot_number, "item_in",
         actor_id=payload.actor_id, actor_role="shipper",
         delivery_id=payload.delivery_id,
-        notes=f"Access token: {token}",
+        notes=f"Mã lấy hàng: {pin}",
     )
+
+    # Cập nhật trạng thái đơn → arrived và thông báo cư dân
+    if payload.delivery_id:
+        from app.models.delivery import Delivery, DeliveryStatus
+        from app.models.user import User
+        from app.api.routes.notifications import push_notification
+
+        d_res = await db.execute(select(Delivery).where(Delivery.id == payload.delivery_id))
+        delivery = d_res.scalar_one_or_none()
+        if delivery:
+            delivery.status = DeliveryStatus.ARRIVED
+            delivery.updated_at = datetime.utcnow()
+
+            u_res = await db.execute(select(User).where(User.username == delivery.recipient_id))
+            resident = u_res.scalar_one_or_none()
+            if resident:
+                await push_notification(
+                    db, user_id=resident.id,
+                    title=f"📦 Đơn {delivery.tracking_code} đã đến kệ",
+                    body=f"Kệ {shelf.name} · Slot {slot_number}\nMã lấy hàng: {pin}\nVui lòng xuống nhận trong 24 giờ.",
+                    notif_type="delivery_arrived",
+                    delivery_id=delivery.id,
+                )
 
     occupied_count = sum(1 for s in shelf.slots if s.status == SlotStatus.OCCUPIED or s.id == slot.id)
     ratio = occupied_count / shelf.total_slots if shelf.total_slots else 0
@@ -218,6 +243,116 @@ async def release_slot(
     updated_slot = result.scalar_one()
     await ws_manager.broadcast("shelf_released", {"shelf_id": shelf_id, "slot": slot_number, "building_id": shelf.building_id})
     return updated_slot
+
+
+@router.post("/{shelf_id}/slots/{slot_number}/pickup")
+async def pickup_slot(
+    shelf_id: int,
+    slot_number: int,
+    payload: PickupRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cư dân lấy hàng — kiểm tra đúng chủ và mã PIN. Cảnh báo nếu lấy nhầm."""
+    from app.models.delivery import Delivery, DeliveryStatus
+    from app.models.user import User
+    from app.api.routes.notifications import push_notification
+
+    shelf = await _get_shelf_or_404(shelf_id, db)
+    slot = await _get_slot_or_404(shelf, slot_number)
+
+    if slot.status != SlotStatus.OCCUPIED:
+        raise HTTPException(status_code=409, detail="Slot này đang trống, không có hàng để lấy.")
+
+    # Lấy thông tin đơn hàng trong slot
+    delivery = None
+    if slot.current_delivery_id:
+        d_res = await db.execute(select(Delivery).where(Delivery.id == slot.current_delivery_id))
+        delivery = d_res.scalar_one_or_none()
+
+    # Kiểm tra đúng chủ hàng
+    if delivery and delivery.recipient_id != payload.resident_id:
+        _log_shelf_event(
+            db, shelf_id, slot_number, "wrong_pickup",
+            actor_id=payload.resident_id, actor_role="resident",
+            delivery_id=slot.current_delivery_id,
+            notes=f"⚠️ {payload.resident_id} cố lấy hàng của {delivery.recipient_id}",
+        )
+
+        # Cảnh báo tất cả manager/admin
+        q = select(User).where(
+            User.building_id == shelf.building_id,
+            User.role.in_(["manager", "admin"]),
+            User.is_active == True,  # noqa: E712
+        )
+        managers = (await db.execute(q)).scalars().all()
+        alert_title = f"🚨 LẤY NHẦM HÀNG — {shelf.name} Slot {slot_number}"
+        alert_body = (
+            f"Cư dân '{payload.resident_id}' cố lấy đơn {delivery.tracking_code} "
+            f"(của '{delivery.recipient_id}').\n"
+            f"Kệ: {shelf.name} · Slot: {slot_number} · Tòa: {shelf.building_id}"
+        )
+        for mgr in managers:
+            await push_notification(
+                db, user_id=mgr.id,
+                title=alert_title, body=alert_body,
+                notif_type="wrong_pickup", delivery_id=delivery.id,
+            )
+
+        await ws_manager.broadcast("wrong_pickup", {
+            "shelf_id": shelf_id, "slot": slot_number,
+            "resident": payload.resident_id,
+            "owner": delivery.recipient_id,
+            "tracking_code": delivery.tracking_code,
+            "building_id": shelf.building_id,
+        })
+        await db.commit()
+
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "type": "wrong_pickup",
+                "message": f"⚠️ Đây KHÔNG phải hàng của bạn! Đơn này thuộc về '{delivery.recipient_id}'.",
+                "tracking_code": delivery.tracking_code,
+                "owner": delivery.recipient_id,
+                "alert_sent": True,
+            },
+        )
+
+    # Kiểm tra mã PIN
+    if slot.access_token != payload.pickup_pin:
+        raise HTTPException(status_code=403, detail="Mã lấy hàng không đúng. Vui lòng kiểm tra lại.")
+
+    # Thành công — giải phóng slot và cập nhật đơn
+    delivery_id = slot.current_delivery_id
+    slot.status = SlotStatus.EMPTY
+    slot.current_delivery_id = None
+    slot.access_token = None
+    slot.occupied_since = None
+    slot.notes = None
+
+    if delivery:
+        delivery.status = DeliveryStatus.COLLECTED
+        delivery.updated_at = datetime.utcnow()
+
+    _log_shelf_event(
+        db, shelf_id, slot_number, "item_out",
+        actor_id=payload.resident_id, actor_role="resident",
+        delivery_id=delivery_id,
+        notes="✅ Lấy hàng thành công",
+    )
+
+    await db.commit()
+    await ws_manager.broadcast("shelf_released", {
+        "shelf_id": shelf_id, "slot": slot_number,
+        "building_id": shelf.building_id, "delivery_id": delivery_id,
+    })
+
+    return {
+        "success": True,
+        "message": f"✅ Lấy hàng thành công! Đơn {delivery.tracking_code if delivery else delivery_id}.",
+        "delivery_id": delivery_id,
+        "tracking_code": delivery.tracking_code if delivery else None,
+    }
 
 
 @router.get("/{shelf_id}/events", response_model=List[ShelfEventResponse])

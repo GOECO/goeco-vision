@@ -96,6 +96,11 @@ class ReleaseSlotRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class PickupRequest(BaseModel):
+    resident_id: str
+    pickup_pin: str
+
+
 class ShelfEventResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
