@@ -32,8 +32,21 @@ def _get_model():
     global _model
     if _model is None:
         try:
-            from ultralytics import YOLO
-            _model = YOLO(settings.yolo_model)
+            import torch
+
+            # PyTorch 2.6 changed weights_only default to True, which blocks ultralytics globals.
+            # Temporarily allow weights_only=False for the trusted ultralytics checkpoint.
+            _orig_load = torch.load
+            def _patched_load(*args, **kwargs):
+                kwargs.setdefault("weights_only", False)
+                return _orig_load(*args, **kwargs)
+            torch.load = _patched_load
+            try:
+                from ultralytics import YOLO
+                _model = YOLO(settings.yolo_model)
+            finally:
+                torch.load = _orig_load
+
             logger.info("YOLO model loaded: %s", settings.yolo_model)
         except Exception as e:
             logger.error("Failed to load YOLO model: %s", e)

@@ -1,8 +1,10 @@
 import json
+import os
 from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -19,9 +21,13 @@ from app.schemas.delivery import (
     VerifyResponse,
 )
 from app.services.verification import verify_delivery_image
+from app.services.image_utils import draw_detections, image_to_base64
 from app.api.routes.ws import manager as ws_manager
 
 router = APIRouter(prefix="/deliveries", tags=["deliveries"])
+
+SNAPSHOT_DIR = "uploads/verifications"
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
 
 async def _get_or_404(delivery_id: int, db: AsyncSession) -> Delivery:
@@ -136,6 +142,14 @@ async def verify_delivery(
     delivery = await _get_or_404(delivery_id, db)
     image_bytes = await image.read()
 
+    # Lưu ảnh gốc vào disk
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    snapshot_filename = f"{delivery_id}_{ts}.jpg"
+    snapshot_path = os.path.join(SNAPSHOT_DIR, snapshot_filename)
+    with open(snapshot_path, "wb") as f:
+        f.write(image_bytes)
+    snapshot_url = f"/uploads/verifications/{snapshot_filename}"
+
     # Lấy face reference nếu shipper đã đăng ký Face ID
     shipper_result = await db.execute(
         select(ShipperProfile).where(ShipperProfile.shipper_id == delivery.shipper_id)
@@ -145,9 +159,20 @@ async def verify_delivery(
 
     result = await verify_delivery_image(image_bytes, delivery.shipper_id, face_reference_json=face_ref)
 
+    # Lưu ảnh đã annotate (bboxes) vào disk
+    try:
+        annotated_bytes = draw_detections(image_bytes, result.detail)
+        annotated_path = os.path.join(SNAPSHOT_DIR, f"{delivery_id}_{ts}_annotated.jpg")
+        with open(annotated_path, "wb") as f:
+            f.write(annotated_bytes)
+        annotated_url = f"/uploads/verifications/{delivery_id}_{ts}_annotated.jpg"
+    except Exception:
+        annotated_url = snapshot_url
+
     delivery.ai_confidence_score = result.confidence
     delivery.verification_note = result.note
     delivery.ai_detection_detail = json.dumps(result.detail, ensure_ascii=False)
+    delivery.camera_snapshot_url = annotated_url
     delivery.updated_at = datetime.utcnow()
 
     if result.verified:
@@ -156,15 +181,50 @@ async def verify_delivery(
         await _log_event(
             db, delivery_id, "ai_verified",
             f"YOLO xác thực — confidence {result.confidence:.0%}",
-            snapshot_url=image.filename,
+            snapshot_url=annotated_url,
         )
     else:
-        await _log_event(db, delivery_id, "ai_unverified", result.note)
+        await _log_event(db, delivery_id, "ai_unverified", result.note, snapshot_url=snapshot_url)
 
     await db.commit()
     await db.refresh(delivery)
-    await ws_manager.broadcast("delivery_verified", {"id": delivery.id, "verified": result.verified, "confidence": result.confidence, "building_id": delivery.building_id})
-    return VerifyResponse(delivery=delivery, detection=result.detail)
+    await ws_manager.broadcast(
+        "delivery_verified",
+        {"id": delivery.id, "verified": result.verified, "confidence": result.confidence, "building_id": delivery.building_id},
+    )
+
+    # Đính kèm ảnh annotated dạng base64 vào detail để UI hiển thị ngay
+    detail_with_img = dict(result.detail)
+    try:
+        detail_with_img["annotated_image_b64"] = image_to_base64(annotated_bytes)
+    except Exception:
+        pass
+
+    return VerifyResponse(delivery=delivery, detection=detail_with_img)
+
+
+@router.get("/{delivery_id}/annotated-snapshot", response_class=Response)
+async def get_annotated_snapshot(delivery_id: int, db: AsyncSession = Depends(get_db)):
+    """Trả về ảnh xác thực đã vẽ bounding box (JPEG)."""
+    delivery = await _get_or_404(delivery_id, db)
+    if not delivery.camera_snapshot_url:
+        raise HTTPException(status_code=404, detail="Chưa có ảnh xác thực")
+
+    path = delivery.camera_snapshot_url.lstrip("/")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="File ảnh không tìm thấy")
+
+    with open(path, "rb") as f:
+        data = f.read()
+
+    if delivery.ai_detection_detail:
+        try:
+            detail = json.loads(delivery.ai_detection_detail)
+            data = draw_detections(data, detail)
+        except Exception:
+            pass
+
+    return Response(content=data, media_type="image/jpeg")
 
 
 @router.get("/{delivery_id}/events", response_model=List[DeliveryEventResponse])
