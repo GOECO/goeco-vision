@@ -2,12 +2,14 @@
 Delivery verification service — kết hợp YOLO object detection + Face ID.
 """
 try:
+    import ultralytics  # noqa: F401
     from app.services.yolo_service import detect_objects as _detect_objects
     _YOLO_AVAILABLE = True
 except Exception:
     _YOLO_AVAILABLE = False
 
 try:
+    import insightface  # noqa: F401
     from app.services import face_service as _face_service
     _FACE_AVAILABLE = True
 except Exception:
