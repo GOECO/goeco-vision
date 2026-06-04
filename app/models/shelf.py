@@ -45,7 +45,7 @@ class ShelfSlot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     shelf_id: Mapped[int] = mapped_column(Integer, ForeignKey("smart_shelves.id"), index=True)
     slot_number: Mapped[int] = mapped_column(Integer)
-    status: Mapped[SlotStatus] = mapped_column(Enum(SlotStatus), default=SlotStatus.EMPTY)
+    status: Mapped[SlotStatus] = mapped_column(Enum(SlotStatus, values_callable=lambda x: [e.value for e in x]), default=SlotStatus.EMPTY)
     current_delivery_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     access_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     occupied_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

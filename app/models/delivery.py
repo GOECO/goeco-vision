@@ -25,7 +25,7 @@ class Delivery(Base):
     building_id: Mapped[str] = mapped_column(String(32))
     unit_number: Mapped[str] = mapped_column(String(16))
     status: Mapped[DeliveryStatus] = mapped_column(
-        Enum(DeliveryStatus), default=DeliveryStatus.PENDING
+        Enum(DeliveryStatus, values_callable=lambda x: [e.value for e in x]), default=DeliveryStatus.PENDING
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
