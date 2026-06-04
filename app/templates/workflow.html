@@ -65,7 +65,7 @@
     <div class="row g-2">
       <div class="col-md-6">
         <label class="form-label small fw-semibold">Mã tracking</label>
-        <input id="trackingCode" class="form-control" value="GOECO-DEMO-001" placeholder="VD: GOECO-2026-007">
+        <input id="trackingCode" class="form-control" placeholder="VD: GOECO-2026-007">
       </div>
       <div class="col-md-6">
         <label class="form-label small fw-semibold">Shipper ID</label>
@@ -163,6 +163,10 @@
 <script>
 const token = localStorage.getItem('goeco_token');
 if (!token) window.location.href = '/login';
+
+// Sinh mã tracking ngẫu nhiên để tránh trùng lặp
+document.getElementById('trackingCode').value =
+  'GOECO-' + new Date().getFullYear() + '-' + Math.floor(Math.random() * 90000 + 10000);
 
 let deliveryId = null;
 let shelfId = null;
