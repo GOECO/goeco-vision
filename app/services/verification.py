@@ -1,8 +1,18 @@
 """
 Delivery verification service — kết hợp YOLO object detection + Face ID.
 """
-from app.services.yolo_service import detect_objects
-from app.services import face_service
+try:
+    from app.services.yolo_service import detect_objects as _detect_objects
+    _YOLO_AVAILABLE = True
+except Exception:
+    _YOLO_AVAILABLE = False
+
+try:
+    from app.services import face_service as _face_service
+    _FACE_AVAILABLE = True
+except Exception:
+    _FACE_AVAILABLE = False
+
 from app.core.config import settings
 
 
@@ -25,7 +35,14 @@ async def verify_delivery_image(
       2. Nếu shipper có Face ID: so sánh khuôn mặt (InsightFace)
       3. Trả về kết quả xác thực tổng hợp
     """
-    detection = await detect_objects(image_bytes)
+    if not _YOLO_AVAILABLE:
+        return VerificationResult(
+            verified=False, confidence=0.0,
+            note="⚠️ AI chưa sẵn sàng — cài requirements-ai.txt để dùng YOLO + Face ID.",
+            detail={"ai_available": False},
+        )
+
+    detection = await _detect_objects(image_bytes)
     detail = detection.to_dict()
 
     person_conf = detection.max_person_confidence
@@ -48,8 +65,8 @@ async def verify_delivery_image(
         )
 
     # Bước 2: Face ID nếu shipper đã đăng ký
-    if face_reference_json:
-        matched, face_conf, face_note = face_service.verify_face_against_reference(
+    if face_reference_json and _FACE_AVAILABLE:
+        matched, face_conf, face_note = _face_service.verify_face_against_reference(
             image_bytes, face_reference_json
         )
         detail["face_verification"] = {"matched": matched, "confidence": face_conf, "note": face_note}
