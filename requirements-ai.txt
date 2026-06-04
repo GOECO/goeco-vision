@@ -1,0 +1,9 @@
+# Cài sau nếu cần tính năng AI (YOLO camera + Face ID)
+# Yêu cầu Visual C++ Build Tools trên Windows
+ultralytics>=8.2.18
+numpy>=1.26.4
+opencv-python-headless>=4.9.0
+onnxruntime>=1.18.0
+insightface>=0.7.3
+anthropic>=0.30.0
+asyncpg>=0.29.0
