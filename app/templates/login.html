@@ -122,7 +122,9 @@ document.getElementById('loginForm').addEventListener('submit', async function (
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ username, password }),
     });
-    const data = await resp.json();
+    let data;
+    const rawText = await resp.text();
+    try { data = JSON.parse(rawText); } catch { data = { detail: 'Server lỗi ' + resp.status + ': ' + rawText.substring(0, 120) }; }
     if (!resp.ok) {
       document.getElementById('errorText').textContent = data.detail || 'Đăng nhập thất bại.';
       errDiv.style.display = 'block';

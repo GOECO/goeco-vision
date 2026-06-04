@@ -45,7 +45,7 @@ async def login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa.")
 
-    token = create_access_token({"sub": user.username, "role": user.role})
+    token = create_access_token({"sub": user.username, "role": user.role.value})
     return TokenResponse(access_token=token, role=user.role, full_name=user.full_name)
 
 
