@@ -7,7 +7,6 @@ và bộ tools để truy vấn dữ liệu vận hành real-time từ DB.
 import json
 import logging
 
-import anthropic
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,15 +17,24 @@ from app.models.user import User, UserRole
 
 logger = logging.getLogger(__name__)
 
-_client: anthropic.AsyncAnthropic | None = None
+try:
+    import anthropic as _anthropic
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _anthropic = None
+    _ANTHROPIC_AVAILABLE = False
+
+_client = None
 
 MAX_TOOL_ITERATIONS = 10
 
 
-def _get_client() -> anthropic.AsyncAnthropic:
+def _get_client():
     global _client
+    if not _ANTHROPIC_AVAILABLE:
+        raise RuntimeError("anthropic package chưa được cài. Chạy: pip install anthropic")
     if _client is None:
-        _client = anthropic.AsyncAnthropic()
+        _client = _anthropic.AsyncAnthropic()
     return _client
 
 
